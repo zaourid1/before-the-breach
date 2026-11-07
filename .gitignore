@@ -218,3 +218,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+venv/ 
+__pycache__/
+
+# macOS
+.DS_Store
+
+# Datathon datasets (large files)
+data/
+*.zip
+
+# Generated outputs (optional)
+# outputs/
