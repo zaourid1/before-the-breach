@@ -1,0 +1,5 @@
+cohort,candidates,positive_cves,positive_rate
+All eligible CVEs,294408,34,0.00011548599222847206
+Published within 180 days,22703,13,0.0005726115491344756
+Published within 90 days,11504,9,0.000782336578581363
+Published within 30 days,4252,6,0.0014111006585136407

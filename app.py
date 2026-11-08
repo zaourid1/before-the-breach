@@ -37,6 +37,15 @@ def load_explainer():
 
     return explainer, features
 
+
+
+@st.cache_data
+def load_budget_results():
+    return pd.read_csv(
+        ROOT / "results" / "patch_budget_results.csv"
+    )
+
+
 @st.cache_data
 def load_rankings() -> pd.DataFrame:
     """Load rankings and calculate EPSS comparison ranks."""
@@ -269,6 +278,173 @@ st.caption(
     "so results are exploratory rather than an "
     "independent estimate of future performance."
 )
+
+
+
+# --------------------------------------------------
+# THE PATCH BUDGET CHALLENGE
+# --------------------------------------------------
+
+st.divider()
+st.header("The Patch Budget Challenge")
+
+st.write(
+    "If a security team can investigate only a limited "
+    "number of vulnerabilities, which ranking identifies "
+    "more future KEV additions?"
+)
+
+budget_path = ROOT / "results" / "patch_budget_results.csv"
+
+if budget_path.exists():
+
+    budget_data = load_budget_results()
+
+    cohort_name = st.selectbox(
+        "Choose historical evaluation population",
+        budget_data["cohort"].unique().tolist()
+    )
+
+    cohort_data = budget_data.loc[
+        budget_data["cohort"] == cohort_name
+    ].sort_values("budget")
+
+    if not cohort_data.empty:
+
+        budget_options = cohort_data["budget"].tolist()
+
+        selected_budget = st.select_slider(
+            "Investigation budget (number of CVEs)",
+            options=budget_options,
+            value=500 if 500 in budget_options
+            else budget_options[-1]
+        )
+
+        selected_row = cohort_data.loc[
+            cohort_data["budget"] == selected_budget
+        ].iloc[0]
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "LightGBM hits",
+            int(selected_row["lightgbm_hits"])
+        )
+
+        col2.metric(
+            "EPSS hits",
+            int(selected_row["epss_hits"])
+        )
+
+        col3.metric(
+            "Additional hits",
+            int(selected_row["difference"])
+        )
+
+        st.caption(
+            f"{int(selected_row['candidates']):,} "
+            "eligible historical vulnerabilities; "
+            f"{int(selected_row['positive_cves'])} "
+            "future KEV additions observed."
+        )
+
+        chart_data = cohort_data.set_index("budget")[
+            ["lightgbm_hits", "epss_hits"]
+        ]
+
+        st.line_chart(chart_data)
+
+        st.caption(
+            "Historical September 2025 development evaluation. "
+            "The same period informed feature selection; "
+            "results are exploratory, not a prospective "
+            "measure of 2026 model performance."
+        )
+
+        if int(selected_row["positive_cves"]) < 10:
+            st.warning(
+                "This cohort has fewer than 10 observed "
+                "positive CVEs. Ranking comparisons are "
+                "highly sensitive to individual examples."
+            )
+
+else:
+    st.info(
+        "Run python3 src/patch_budget.py "
+        "to generate the historical budget analysis."
+    )
+
+
+# --------------------------------------------------
+# HISTORICAL CASE STUDIES
+# --------------------------------------------------
+
+st.divider()
+st.header("Hidden in Plain Sight")
+
+st.write(
+    "Historical vulnerabilities that were subsequently "
+    "added to KEV but received different priorities "
+    "from LightGBM and EPSS."
+)
+
+audit_path = ROOT / "results" / "recent_positive_audit.csv"
+
+if audit_path.exists():
+
+    audit = pd.read_csv(audit_path)
+
+    selected_case = st.selectbox(
+        "Explore a historical case",
+        audit["cve_id"].tolist()
+    )
+
+    case = audit.loc[
+        audit["cve_id"] == selected_case
+    ].iloc[0]
+
+    ml_rank = int(case["ml_rank"])
+    epss_rank = int(case["epss_rank"])
+
+    st.subheader(selected_case)
+
+    left, middle, right = st.columns(3)
+
+    left.metric("LightGBM rank", ml_rank)
+    middle.metric("EPSS rank", epss_rank)
+
+    right.metric(
+        "Rank improvement",
+        f"{epss_rank - ml_rank:+,}"
+    )
+
+    st.write(
+        "**Subsequent KEV addition:**",
+        str(case["date_added"])[:10]
+    )
+
+    chart = pd.DataFrame({
+        "Ranking": ["LightGBM", "EPSS"],
+        "Position": [ml_rank, epss_rank]
+    }).set_index("Ranking")
+
+    st.bar_chart(
+        chart,
+        horizontal=True
+    )
+
+    st.caption(
+        "Lower rank numbers indicate higher priority. "
+        "Ranks are within the September 2025 cohort "
+        "of CVEs published within 90 days. "
+        "These are retrospective development results."
+    )
+
+else:
+    st.info(
+        "Generate the historical audit by running "
+        "python3 src/patch_budget.py"
+    )
 
 
 # --- Individual vulnerability inspector ---
