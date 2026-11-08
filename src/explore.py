@@ -1,28 +1,42 @@
 from pathlib import Path
 import pandas as pd
 
+#Find the project root
+ROOT = Path(__file__).resolve().parent.parent
 
-from pathlib import Path
-import pandas as pd
+#locate the benchmark csv
+file_path = ROOT / "data" / "scoreboard_2026.csv"
 
-# Locate the project directory.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+#load the dataset into panada DF
+df = pd.read_csv(file_path)
 
-# Construct the path to our dataset.
-data_path = PROJECT_ROOT / "data" / "scoreboard_2026.csv"
-
-# Read the CSV into a pandas DataFrame.
-df = pd.read_csv(data_path)
-
-# Explore the data.
-print("Number of rows and columns:")
+print("DATASET SHAPE: ")
 print(df.shape)
 
-print("\nColumn names:")
+print("\nCOLUMN NAMES:")
 print(df.columns.tolist())
 
-print("\nFirst five vulnerabilities:")
+print("\nFIRST FIVE ROWS:")
 print(df.head())
 
-print("\nMissing values per column:")
+print("\nMISSING VALUES:")
 print(df.isna().sum())
+
+print("\nDATA TYPES:")
+print(df.dtypes)
+
+print("\nDUPLICATE CVE IDs:")
+print(df["cve_id"].duplicated().sum())
+
+#how are epss scores distributed across all vulnerabilities?
+print("\nEPSS STATISTICS:")
+print(df["epss"].describe())
+
+print("\nTOP 10 HIGHEST EPSS SCORES:")
+
+top10 = df.sort_values(
+    by="epss",
+    ascending=False
+).head(10)
+
+print(top10[["cve_id", "epss"]])
