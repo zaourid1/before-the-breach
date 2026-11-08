@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 from lightgbm import LGBMClassifier
+import joblib
 
 from train import build_snapshot, FEATURES, EXPLOIT_COLUMNS
 
@@ -68,6 +69,19 @@ model.fit(
     train[FEATURES],
     train["target"]
 )
+
+# Save the fitted model and its exact feature order.
+model_path = ROOT / "lightgbm_model.joblib"
+
+joblib.dump(
+    {
+        "model": model,
+        "features": FEATURES,
+    },
+    model_path
+)
+
+print(f"Model saved to: {model_path}")
 
 print("Final model trained successfully!")
 

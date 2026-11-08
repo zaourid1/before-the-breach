@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import joblib
+import shap
+import matplotlib.pyplot as plt
 
 from src.granite import generate_briefing
 
@@ -21,18 +24,60 @@ st.set_page_config(
     layout="wide",
 )
 
+@st.cache_resource
+def load_explainer():
+    artifact = joblib.load(
+        ROOT / "lightgbm_model.joblib"
+    )
+
+    model = artifact["model"]
+    features = artifact["features"]
+
+    explainer = shap.TreeExplainer(model)
+
+    return explainer, features
 
 @st.cache_data
 def load_rankings() -> pd.DataFrame:
-    """Load saved predictions without retraining LightGBM."""
+    """Load rankings and calculate EPSS comparison ranks."""
+
     frame = pd.read_csv(RANKINGS_PATH)
+
+    # Rank by LightGBM.
     frame = frame.sort_values(
         ["ml_score", "epss", "cve_id"],
         ascending=[False, False, True],
         kind="stable",
     ).reset_index(drop=True)
+
     frame["rank"] = frame.index + 1
+
+    # Rank the same vulnerabilities using EPSS alone.
+    epss_order = frame.sort_values(
+        ["epss", "cve_id"],
+        ascending=[False, True],
+        kind="stable",
+    ).copy()
+
+    epss_order["epss_rank"] = range(
+        1, len(epss_order) + 1
+    )
+
+    # Merge EPSS ranks back into the LightGBM rankings.
+    frame = frame.merge(
+        epss_order[["cve_id", "epss_rank"]],
+        on="cve_id",
+        how="left",
+        validate="one_to_one",
+    )
+
+    # Positive = ranked higher by LightGBM.
+    frame["rank_improvement"] = (
+        frame["epss_rank"] - frame["rank"]
+    )
+
     return frame
+
 
 
 st.title("🛡️ Before the Breach")
@@ -86,6 +131,146 @@ st.dataframe(
     hide_index=True,
 )
 
+
+# --------------------------------------------------
+# MODEL COMPARISON
+# --------------------------------------------------
+
+st.divider()
+st.header("LightGBM vs. EPSS")
+
+st.caption(
+    "Compare vulnerability priorities produced by "
+    "the ML model and EPSS alone."
+)
+
+# Top-500 sets for each method.
+ml_top500 = set(
+    df.nsmallest(500, "rank")["cve_id"]
+)
+
+epss_top500 = set(
+    df.nsmallest(500, "epss_rank")["cve_id"]
+)
+
+shared_cves = ml_top500 & epss_top500
+ml_only = ml_top500 - epss_top500
+epss_only = epss_top500 - ml_top500
+
+left, middle, right = st.columns(3)
+
+left.metric(
+    "Shared top-500 CVEs",
+    len(shared_cves)
+)
+
+middle.metric(
+    "LightGBM only",
+    len(ml_only)
+)
+
+right.metric(
+    "EPSS only",
+    len(epss_only)
+)
+
+# Display comparison chart.
+comparison_counts = pd.DataFrame({
+    "Category": [
+        "Shared",
+        "LightGBM only",
+        "EPSS only"
+    ],
+    "CVEs": [
+        len(shared_cves),
+        len(ml_only),
+        len(epss_only)
+    ]
+}).set_index("Category")
+
+comparison_counts = comparison_counts.reindex(
+    ["Shared", "LightGBM only", "EPSS only"]
+)
+
+st.bar_chart(
+    comparison_counts,
+    horizontal=True,
+    sort=False
+)
+
+# Inspect which vulnerabilities differ.
+st.subheader("Ranking differences")
+
+comparison_filter = st.selectbox(
+    "Choose a comparison group",
+    [
+        "LightGBM top 500",
+        "Promoted by LightGBM",
+        "EPSS only",
+        "Shared top 500"
+    ]
+)
+
+if comparison_filter == "LightGBM top 500":
+    comparison_df = df[df["rank"] <= 500]
+
+elif comparison_filter == "Promoted by LightGBM":
+    comparison_df = df[
+        df["cve_id"].isin(ml_only)
+    ]
+
+elif comparison_filter == "EPSS only":
+    comparison_df = df[
+        df["cve_id"].isin(epss_only)
+    ]
+
+else:
+    comparison_df = df[
+        df["cve_id"].isin(shared_cves)
+    ]
+
+st.dataframe(
+    comparison_df[
+        [
+            "cve_id",
+            "rank",
+            "epss_rank",
+            "rank_improvement",
+            "ml_score",
+            "epss",
+            "exploit_count",
+            "age_days"
+        ]
+    ].sort_values("rank"),
+    hide_index=True,
+    use_container_width=True,
+)
+
+
+# --------------------------------------------------
+# HISTORICAL VALIDATION
+# --------------------------------------------------
+
+st.subheader("Historical model validation")
+
+historical_results = pd.DataFrame({
+    "Method": ["EPSS", "LightGBM"],
+    "Hits@500": [4, 6]
+}).set_index("Method")
+
+st.bar_chart(historical_results)
+
+st.caption(
+    "September 2025 historical experiment: "
+    "34 vulnerabilities entered KEV within 90 days. "
+    "LightGBM identified 6 in its top 500, "
+    "compared with 4 for EPSS. "
+    "This period was also used during model development, "
+    "so results are exploratory rather than an "
+    "independent estimate of future performance."
+)
+
+
 # --- Individual vulnerability inspector ---
 st.divider()
 st.subheader("Vulnerability inspector")
@@ -117,6 +302,82 @@ else:
         status = "Present" if int(selected[column]) == 1 else "Not observed"
         st.write(f"- **{label}:** {status}")
 
+
+    # ----------------------------------------
+    # SHAP MODEL EXPLAINABILITY
+    # ----------------------------------------
+
+    st.divider()
+    st.subheader("Why did LightGBM rank this CVE?")
+
+    if st.button("Explain model prediction"):
+        try:
+            explainer, features = load_explainer()
+
+            input_row = pd.DataFrame(
+                [selected[features].to_dict()],
+                columns=features
+            )
+
+
+            # Calculate SHAP values for the selected CVE.
+            explanation = explainer(input_row)
+
+            # Handle SHAP's binary-class output.
+            if explanation.values.ndim == 3:
+                explanation = explanation[:, :, 1]
+
+            # Extract the selected vulnerability.
+            cve_explanation = explanation[0]
+
+            # Show signed feature contributions.
+            contributions = pd.DataFrame({
+                "Feature": features,
+                "SHAP value": cve_explanation.values
+            })
+
+            st.write("Signed SHAP contributions:")
+            st.dataframe(
+                contributions,
+                hide_index=True
+            )
+
+            # Verify the SHAP decomposition.
+            raw_score = (
+                float(cve_explanation.base_values)
+                + float(cve_explanation.values.sum())
+            )
+
+            st.write("SHAP raw model output:", raw_score)
+            st.write(
+                "Model ranking score:",
+                float(selected["ml_score"])
+            )
+
+            # Create the waterfall plot.
+            plt.figure(figsize=(10, 6))
+
+            shap.plots.waterfall(
+                cve_explanation,
+                max_display=7,
+                show=False
+            )
+
+            st.pyplot(plt.gcf())
+            plt.close("all")
+
+            st.caption(
+                "SHAP explains how each feature moves "
+                "the model output away from its baseline. "
+                "For this LightGBM classifier, the raw "
+                "output is in log-odds, not probabilities. "
+                "SHAP values are not causal effects."
+            )
+
+
+        except Exception as error:
+            st.error(f"SHAP explanation failed: {error}")
+
     st.divider()
     st.subheader("IBM Granite analyst briefing")
     st.caption(
@@ -134,6 +395,11 @@ else:
                 st.error(f"Granite briefing failed: {error}")
 
     if st.session_state.get("briefing_cve") == selected_cve:
+        st.caption(
+            "AI-generated interpretation using IBM Granite. "
+            "Review recommendations against the verified "
+            "snapshot evidence above before taking action."
+        )
         st.markdown(st.session_state["briefing"])
 
 # --- Export ---
